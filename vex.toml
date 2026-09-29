@@ -1,0 +1,14 @@
+sources = ["demo/basic.ex", "demo/fib.ex", "demo/counter/counter.ex"]
+engine = "z3"
+jobs = 2
+timeout_ms = 10000
+
+[[models]]
+file = "demo/counter/counter.tla"
+cfg = "demo/counter/counter.cfg"
+[models.exports]
+step = "Counter.step/2"
+
+[[models]]
+file = "demo/mailbox/mailbox.tla"
+cfg = "demo/mailbox/mailbox.cfg"

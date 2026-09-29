@@ -1,0 +1,9 @@
+sources = ["counter.ex"]
+engine = "z3"
+
+[[models]]
+file = "counter.tla"
+cfg = "counter.cfg"
+
+[models.exports]
+step = "Counter.step/2"

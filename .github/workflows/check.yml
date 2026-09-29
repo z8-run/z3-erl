@@ -1,0 +1,36 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '27.3'
+          elixir-version: '1.18.4'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y z3 elan ripgrep
+          rustup toolchain install 1.93.0 --profile minimal --component clippy --component rustfmt
+          rustup default 1.93.0
+      - name: setup
+        run: bin/setup.sh
+      - name: verify
+        run: bin/check.sh

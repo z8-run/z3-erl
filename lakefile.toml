@@ -1,0 +1,8 @@
+name = "vex"
+version = "0.1.0"
+defaultTargets = ["kernel"]
+
+[[lean_lib]]
+name = "kernel"
+roots = ["kernel.lean.term", "kernel.lean.audit", "kernel.lean.auto", "kernel.lean.logic", "kernel.lean.actor"]
+moreLeanArgs = ["-DautoImplicit=false"]

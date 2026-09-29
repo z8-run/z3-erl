@@ -1,0 +1,15 @@
+/target/
+/.tools/
+/.vex/
+/.lake/
+**/_build/
+**/deps/
+**/.vex/
+*.olean
+*.ilean
+*.trace
+.DS_Store
+.ripwire_cache*
+.ripwire_quality*
+__pycache__/
+*.pyc
