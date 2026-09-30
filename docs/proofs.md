@@ -10,7 +10,8 @@ followed by their UTF-8 hexadecimal bytes; `n` becomes `v6e`.
 
 The default `vex_auto` tactic in `kernel/lean/auto.lean` decomposes logical
 summaries, then uses linear integer arithmetic (`omega`), simplification and
-case splitting. It does not import Mathlib or replay a claimed SMT result.
+case splitting, using the checked size and sequence bounds from
+`kernel/lean/seq.lean`. It does not import Mathlib or replay a claimed SMT result.
 Unresolved goals remain unproved.
 
 ## supply a proof
@@ -43,3 +44,8 @@ translation assumptions. The metatheorem that its Rust VC generator implements
 the Hoare rules has not yet been proved. Unbounded actor invariants additionally
 need an operational model and a refinement argument; a TLC success alone does
 not supply either theorem.
+
+The source `assume` statement is an admitted premise, even on the Lean route.
+Read the enclosing contract status: `conditional` does not certify the source
+contract unconditionally. Axiom auditing of a theorem does not remove its explicit
+hypotheses. Quantified or nonlinear goals may still require a user proof term.

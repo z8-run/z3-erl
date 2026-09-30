@@ -1,41 +1,82 @@
 use super::{dialect as d, render, sort_name};
-use kernel::{theory::terms, vc::vc};
+use kernel::{
+    theory::{datatypes, definitions},
+    vc::vc,
+};
 use std::fmt::Write;
 
 pub fn theory() -> String {
-    let mut s = String::from(
-        "; generated from kernel::theory; erlang.discrete.1\n(declare-datatypes () ((term\n",
+    let mut s = format!(
+        "; generated from kernel::theory; {}\n(declare-datatypes () (\n",
+        kernel::profile
     );
-    for c in terms {
-        write!(s, "  (k_{}", c.op.name()).unwrap();
-        for (p, t) in c.fields {
-            write!(s, " (raw_{} {})", p.name(), sort_name(*t, d::smt)).unwrap();
+    for (t, ctors) in datatypes {
+        writeln!(s, "({}", sort_name(*t, d::smt)).unwrap();
+        for c in *ctors {
+            write!(s, "  (k_{}", c.op.name()).unwrap();
+            for (p, t) in c.fields {
+                write!(s, " (raw_{} {})", p.name(), sort_name(*t, d::smt)).unwrap();
+            }
+            s.push_str(")\n");
         }
         s.push_str(")\n");
     }
-    s.push_str(")))\n");
-    for c in terms {
-        writeln!(
-            s,
-            "(define-fun k_{} ((x term)) Bool ((_ is k_{}) x))",
-            c.test.name(),
-            c.op.name()
-        )
-        .unwrap();
-        for (p, t) in c.fields {
+    s.push_str("))\n");
+    selectors(&mut s);
+    recursive(&mut s);
+    s
+}
+
+fn selectors(s: &mut String) {
+    for (t, ctors) in datatypes {
+        let input = sort_name(*t, d::smt);
+        for c in *ctors {
             writeln!(
                 s,
-                "(define-fun k_{} ((x term)) {} (ite (k_{} x) (raw_{} x) {}))",
-                p.name(),
-                sort_name(*t, d::smt),
+                "(define-fun k_{} ((x {input})) Bool ((_ is k_{}) x))",
                 c.test.name(),
-                p.name(),
-                render(&p.default(), d::smt)
+                c.op.name()
             )
             .unwrap();
+            for (p, t) in c.fields {
+                writeln!(
+                    s,
+                    "(define-fun k_{} ((x {input})) {} (ite (k_{} x) (raw_{} x) {}))",
+                    p.name(),
+                    sort_name(*t, d::smt),
+                    c.test.name(),
+                    p.name(),
+                    render(&p.default(), d::smt)
+                )
+                .unwrap();
+            }
         }
     }
-    s
+}
+
+fn recursive(s: &mut String) {
+    s.push_str("(define-funs-rec (\n");
+    let defs = definitions();
+    for def in &defs {
+        let params = def
+            .params
+            .iter()
+            .map(|(n, t)| format!("({} {})", kernel::name(n), sort_name(*t, d::smt)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        writeln!(
+            s,
+            "(k_{} ({params}) {})",
+            def.op.name(),
+            sort_name(def.op.output(), d::smt)
+        )
+        .unwrap();
+    }
+    s.push_str(") (\n");
+    for def in &defs {
+        writeln!(s, "{}", render(&def.body, d::smt)).unwrap();
+    }
+    s.push_str("))\n");
 }
 
 pub fn emit(v: &vc, timeout_ms: u64, model: bool) -> String {
@@ -47,6 +88,9 @@ pub fn emit(v: &vc, timeout_ms: u64, model: bool) -> String {
         v.span.line
     );
     s.push_str(&theory());
+    for law in kernel::theory::lemmas(v) {
+        writeln!(s, "(assert {})", render(&law, d::smt)).unwrap();
+    }
     let (vars, funs) = v.symbols();
     for (name, t) in vars {
         writeln!(

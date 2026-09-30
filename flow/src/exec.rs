@@ -8,87 +8,98 @@ use anyhow::{Context, Result, bail};
 use kernel::{
     bif,
     ir::{arm, fun, kind, mode, node, span},
-    logic::{expr as e, op, sort},
+    logic::{expr as e, sort},
     vc::vc,
 };
 use std::collections::BTreeSet;
 
 #[derive(Clone)]
-struct state {
-    vars: env,
-    facts: Vec<e>,
-    deps: BTreeSet<String>,
-    rank: Option<e>,
-    proof: bool,
-    unfolding: bool,
+pub(crate) struct state {
+    pub(crate) vars: env,
+    pub(crate) facts: Vec<e>,
+    pub(crate) deps: BTreeSet<String>,
+    pub(crate) rank: Option<Vec<e>>,
+    pub(crate) proof: bool,
+    pub(crate) unfolding: bool,
 }
 
-type paths = Vec<(state, e)>;
+pub(crate) type paths = Vec<(state, e)>;
 
-struct check<'a, 'w> {
-    world: &'w world<'a>,
-    owner: &'a fun,
-    vcs: Vec<vc>,
-    deps: BTreeSet<String>,
+pub(crate) struct check<'a, 'w> {
+    pub(crate) world: &'w world<'a>,
+    pub(crate) owner: &'a fun,
+    pub(crate) vcs: Vec<vc>,
+    pub(crate) deps: BTreeSet<String>,
+    pub(crate) assumptions: Vec<crate::admission>,
+    pub(crate) fresh: usize,
 }
 
 pub fn check(w: &world, f: &fun) -> Result<(contract, Vec<vc>)> {
     let args: Vec<_> = f.args.iter().map(|n| e::var(n, sort::term)).collect();
-    let mut s = state {
-        vars: spec::bind(f, &args),
-        facts: vec![],
-        deps: BTreeSet::new(),
-        rank: None,
-        proof: f.mode == mode::ghost,
-        unfolding: false,
-    };
     let mut c = check {
         world: w,
         owner: f,
         vcs: vec![],
         deps: BTreeSet::new(),
+        assumptions: vec![],
+        fresh: 0,
     };
-    for n in f.requires.iter().chain([&f.guard]) {
-        let v = spec::eval(w, f, &s.vars, n, None)
-            .with_context(|| format!("{}: invalid precondition", f.id()))?;
-        s.deps.extend(v.deps);
-        c.require(&mut s, n, "domain", v.safe);
-        s.facts.push(e::true_term(v.term));
+    for branch in spec::select(w, f, &args)? {
+        if branch.test == e::no() {
+            continue;
+        }
+        let clause = branch.clause;
+        let original = branch.vars.clone();
+        let mut s = state {
+            vars: branch.vars,
+            facts: vec![branch.test],
+            deps: BTreeSet::new(),
+            rank: None,
+            proof: f.mode == mode::ghost,
+            unfolding: false,
+        };
+        for n in &clause.requires {
+            let v = spec::eval(w, f, &s.vars, n, None)
+                .with_context(|| format!("{}: invalid precondition", f.id()))?;
+            s.deps.extend(v.deps);
+            c.require(
+                &mut s,
+                n,
+                "domain",
+                e::and(v.safe, e::is_bool(v.term.clone())),
+            );
+            s.facts.push(e::true_term(v.term));
+        }
+        if let Some((rank, safe, deps)) = crate::rank::measure(w, f, clause, &s.vars)? {
+            s.deps.extend(deps);
+            c.require(&mut s, &clause.body, "measure", safe);
+            s.rank = Some(rank);
+        }
+        let results = c
+            .eval(f, &clause.body, s, 0)
+            .with_context(|| format!("{}:{}: {}", clause.span.file, clause.span.line, f.id()))?;
+        for (mut s, result) in results {
+            let (post, deps) = spec::clause_post(w, f, clause, &original, &args, &result)?;
+            s.deps.extend(deps);
+            c.emit(&s, &clause.body, "post", post);
+            c.deps.extend(s.deps);
+        }
     }
-    if let Some(rank) = w.rank(f) {
-        let v = spec::eval(w, f, &s.vars, &rank, None)?;
-        s.deps.extend(v.deps);
-        let safe = e::all([
-            v.safe,
-            e::one(op::is_int, v.term.clone()),
-            e::two(op::le, e::num(0), e::one(op::ival, v.term.clone())),
-        ]);
-        c.require(&mut s, &rank, "measure", safe);
-        s.rank = Some(e::one(op::ival, v.term));
-    }
-    let results = c
-        .eval(f, &f.body, s, 0)
-        .with_context(|| format!("{}:{}: {}", f.span.file, f.span.line, f.id()))?;
-    for (mut s, result) in results {
-        let (post, deps) = spec::post(w, f, &args, &result)?;
-        s.deps.extend(deps);
-        c.emit(&s, &f.body, "post", post);
-        c.deps.extend(s.deps);
-    }
-    let total = !w.recursive(f) || w.rank(f).is_some();
+    let total = w.total(f);
     let contract = contract {
         owner: f.id(),
         span: f.span.clone(),
         mode: f.mode,
         total,
         deps: c.deps,
+        assumptions: c.assumptions,
         conditions: c.vcs.iter().map(|v| v.id.clone()).collect(),
     };
     Ok((contract, c.vcs))
 }
 
 impl check<'_, '_> {
-    fn emit(&mut self, s: &state, n: &node, kind: &str, goal: e) {
+    pub(crate) fn emit(&mut self, s: &state, n: &node, kind: &str, goal: e) {
         let loc = span {
             file: self.owner.span.file.clone(),
             line: if n.line == 0 {
@@ -97,7 +108,7 @@ impl check<'_, '_> {
                 n.line
             },
         };
-        let v = vc::new(
+        let mut v = vc::new(
             self.owner.id(),
             kind,
             loc,
@@ -105,18 +116,21 @@ impl check<'_, '_> {
             goal,
             s.deps.clone(),
         );
+        if let kind::assert { message, .. } = &n.kind {
+            v.message = message.clone();
+        }
         if !self.vcs.iter().any(|old| old.id == v.id) {
             self.vcs.push(v);
         }
         self.deps.extend(s.deps.iter().cloned());
     }
-    fn require(&mut self, s: &mut state, n: &node, kind: &str, goal: e) {
+    pub(crate) fn require(&mut self, s: &mut state, n: &node, kind: &str, goal: e) {
         if goal != e::yes() {
             self.emit(s, n, kind, goal.clone());
             s.facts.push(goal);
         }
     }
-    fn eval(&mut self, f: &fun, n: &node, s: state, depth: usize) -> Result<paths> {
+    pub(crate) fn eval(&mut self, f: &fun, n: &node, s: state, depth: usize) -> Result<paths> {
         if depth > 128 || self.vcs.len() > 10000 {
             bail!("verification expansion limit exceeded; split the function into contracts");
         }
@@ -131,6 +145,11 @@ impl check<'_, '_> {
                 self.short(f, n, name, args, s, depth)?
             }
             kind::op { name, args } => {
+                if name == "term_size" && !s.proof {
+                    bail!(
+                        "term_size is a proof operation; use it in contracts, measures or ghost code"
+                    );
+                }
                 let mut out = vec![];
                 for (mut s, args) in self.args(f, args, s, depth)? {
                     let v = bif::apply(name, &args)?;
@@ -149,20 +168,7 @@ impl check<'_, '_> {
                 }
                 out
             }
-            kind::block { items } => {
-                let mut current = vec![(s, e::atom(2))];
-                for item in items {
-                    let mut next = vec![];
-                    for (s, _) in current {
-                        next.extend(self.eval(f, item, s, depth + 1)?);
-                    }
-                    if next.len() > 1024 {
-                        bail!("more than 1024 symbolic paths; split the function into contracts");
-                    }
-                    current = next;
-                }
-                current
-            }
+            kind::block { items } => self.block(f, items, s, depth)?,
             kind::bind { pattern, value } => {
                 let mut out = vec![];
                 for (mut s, value) in self.eval(f, value, s, depth + 1)? {
@@ -183,7 +189,7 @@ impl check<'_, '_> {
             kind::tuple { items } => self
                 .args(f, items, s, depth)?
                 .into_iter()
-                .map(|(s, items)| (s, e::one(op::tuple, e::list(&items, e::nil()))))
+                .map(|(s, items)| (s, e::tuple(&items)))
                 .collect(),
             kind::list { items, tail } => {
                 let mut out = vec![];
@@ -198,33 +204,40 @@ impl check<'_, '_> {
                 }
                 out
             }
-            kind::assert { value } => {
-                let mut s = s;
-                let v = spec::eval(self.world, f, &s.vars, value, None)?;
-                s.deps.extend(v.deps);
-                self.require(&mut s, n, "assert", e::and(v.safe, e::true_term(v.term)));
-                vec![(s, e::atom(2))]
-            }
-            kind::ghost { body } => {
-                let mut s = s;
-                let vars = s.vars.clone();
-                let proof = s.proof;
-                s.proof = true;
-                self.eval(f, body, s, depth + 1)?
-                    .into_iter()
-                    .map(|(mut s, _)| {
-                        s.vars = vars.clone();
-                        s.proof = proof;
-                        (s, e::atom(2))
-                    })
-                    .collect()
-            }
-            kind::unfold { call } => self.unfold(f, n, call, s, depth)?,
+            kind::quant { .. } => bail!("quantifiers belong in contracts and assertions"),
+            _ => self.proof(f, n, s, depth)?,
         };
         if results.len() > 1024 {
             bail!("symbolic path limit exceeded");
         }
         Ok(results)
+    }
+    fn block(&mut self, f: &fun, items: &[node], s: state, depth: usize) -> Result<paths> {
+        let mut current = vec![(s, e::atom(2))];
+        for item in items {
+            let mut next = vec![];
+            for (s, previous) in current {
+                next.extend(
+                    self.eval(f, item, s, depth + 1)?
+                        .into_iter()
+                        .map(|(s, value)| {
+                            (
+                                s,
+                                if item.erased() {
+                                    previous.clone()
+                                } else {
+                                    value
+                                },
+                            )
+                        }),
+                );
+            }
+            if next.len() > 1024 {
+                bail!("more than 1024 symbolic paths; split the function into contracts");
+            }
+            current = next;
+        }
+        Ok(current)
     }
     fn args(
         &mut self,
@@ -261,8 +274,8 @@ impl check<'_, '_> {
         if callee.mode == mode::ghost && !s.proof {
             bail!("ghost {} cannot be called by executable code", callee.id());
         }
-        if s.proof && callee.mode != mode::ghost {
-            bail!("erased proof code can only call total ghost functions");
+        if s.proof && !self.world.total(callee) {
+            bail!("erased proof code can only call total functions");
         }
         if callee.mode == mode::private && f.module != callee.module {
             bail!("private function {} cannot be called remotely", callee.id());
@@ -276,23 +289,11 @@ impl check<'_, '_> {
             .clone()
             .filter(|_| !s.unfolding && self.world.same_cycle(f, callee))
         {
-            let rank = self
-                .world
-                .rank(callee)
-                .context("every member of a measured recursive cycle needs a measure")?;
-            let v = spec::eval(self.world, callee, &spec::bind(callee, &args), &rank, None)?;
-            self.require(
-                &mut s,
-                n,
-                "decrease",
-                e::all([
-                    v.safe,
-                    e::one(op::is_int, v.term.clone()),
-                    e::two(op::le, e::num(0), e::one(op::ival, v.term.clone())),
-                    e::two(op::lt, e::one(op::ival, v.term), before),
-                ]),
-            );
+            let (goal, deps) = crate::rank::decrease(self.world, callee, &args, &before)?;
+            s.deps.extend(deps);
+            self.require(&mut s, n, "decrease", goal);
         }
+
         let result = e::call(callee.id(), args.clone());
         let (post, deps) = spec::post(self.world, callee, &args, &result)?;
         s.deps.extend(deps);
@@ -384,11 +385,11 @@ impl check<'_, '_> {
             if test == e::no() {
                 continue;
             }
+            spec::guard_syntax(&arm.guard)?;
             let guard = spec::eval(self.world, f, &branch.vars, &arm.guard, None)?;
             branch.deps.extend(guard.deps);
             branch.facts.push(e::negate(previous.clone()));
             branch.facts.push(test.clone());
-            self.require(&mut branch, &arm.guard, "guard_domain", guard.safe.clone());
             let selected = e::all([test, guard.safe, e::true_term(guard.term)]);
             if selected == e::no() {
                 continue;
@@ -403,20 +404,25 @@ impl check<'_, '_> {
         self.emit(&s, n, "coverage", previous);
         Ok(out)
     }
-    fn unfold(&mut self, f: &fun, n: &node, call: &node, s: state, depth: usize) -> Result<paths> {
+    pub(crate) fn unfold(
+        &mut self,
+        f: &fun,
+        n: &node,
+        call: &node,
+        s: state,
+        depth: usize,
+    ) -> Result<paths> {
         let kind::call { module, name, args } = &call.kind else {
             bail!("unfold requires a ghost function call");
         };
         let callee = self
             .world
             .get(module.as_deref().unwrap_or(&f.module), name, args.len())?;
-        if callee.mode != mode::ghost {
-            bail!("only total ghost definitions may be unfolded");
+        if !self.world.total(callee) {
+            bail!("only total definitions may be unfolded");
         }
-        if self.owner.mode == mode::ghost && self.world.same_cycle(self.owner, callee) {
-            bail!(
-                "unfold inside a ghost definition cannot depend on its own recursive component; use a decreasing ghost call"
-            );
+        if self.world.same_cycle(self.owner, callee) {
+            bail!("unfold cannot depend on its own recursive component; use a decreasing call");
         }
         let mut out = vec![];
         for (mut s, args) in self.args(f, args, s, depth)? {
@@ -425,15 +431,21 @@ impl check<'_, '_> {
             let unfolding = s.unfolding;
             s.proof = true;
             s.unfolding = true;
-            let (mut s, result) = self.call(f, callee, n, args.clone(), s)?;
-            s.vars = spec::bind(callee, &args);
-            s.unfolding = true;
-            for (mut s, value) in self.eval(callee, &callee.body, s, depth + 1)? {
-                s.facts.push(e::eq(result.clone(), value));
-                s.vars = vars.clone();
-                s.proof = proof;
-                s.unfolding = unfolding;
-                out.push((s, e::atom(2)));
+            let (s, result) = self.call(f, callee, n, args.clone(), s)?;
+            for branch in spec::select(self.world, callee, &args)? {
+                if branch.test == e::no() {
+                    continue;
+                }
+                let mut inner = s.clone();
+                inner.vars = branch.vars;
+                inner.facts.push(branch.test);
+                for (mut s, value) in self.eval(callee, &branch.clause.body, inner, depth + 1)? {
+                    s.facts.push(e::eq(result.clone(), value));
+                    s.vars = vars.clone();
+                    s.proof = proof;
+                    s.unfolding = unfolding;
+                    out.push((s, e::atom(2)));
+                }
             }
         }
         Ok(out)

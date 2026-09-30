@@ -16,6 +16,30 @@ pub fn module(exports: &BTreeMap<String, kernel::model::export>) -> Result<Strin
     let mut s = String::from(
         "---- MODULE vex ----\nEXTENDS Integers, Sequences\n\n\\* generated pure source operators; use each _pre domain predicate\n",
     );
+    for def in kernel::theory::definitions() {
+        writeln!(
+            s,
+            "RECURSIVE k_{}({})",
+            def.op.name(),
+            vec!["_"; def.params.len()].join(", ")
+        )
+        .unwrap();
+    }
+    for def in kernel::theory::definitions() {
+        let params = def
+            .params
+            .iter()
+            .map(|(n, _)| kernel::name(n))
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(
+            s,
+            "k_{}({params}) == {}\n",
+            def.op.name(),
+            render(&def.body)?
+        )
+        .unwrap();
+    }
     for (name, x) in exports {
         if !identifier(name) {
             bail!("invalid TLA+ export name {name}");
@@ -64,6 +88,7 @@ pub fn render(e: &expr) -> Result<String> {
         expr::app { .. } => {
             bail!("TLA+ export contains an uninterpreted call; export concrete nonrecursive code")
         }
+        expr::quant { .. } => bail!("unbounded quantifiers are not finite TLC source exports"),
         expr::ite { cond, yes, no } => format!(
             "(IF {} THEN {} ELSE {})",
             render(cond)?,
@@ -77,7 +102,11 @@ pub fn render(e: &expr) -> Result<String> {
 fn primitive(p: op, args: &[expr]) -> Result<String> {
     let a = args.iter().map(render).collect::<Result<Vec<_>>>()?;
     if p.constructor() {
-        let c = kernel::theory::terms.iter().find(|c| c.op == p).unwrap();
+        let c = kernel::theory::datatypes
+            .iter()
+            .flat_map(|(_, cs)| *cs)
+            .find(|c| c.op == p)
+            .unwrap();
         let mut fields = vec![format!("tag |-> \"{}\"", p.name())];
         fields.extend(
             c.fields
@@ -86,6 +115,9 @@ fn primitive(p: op, args: &[expr]) -> Result<String> {
                 .map(|((p, _), a)| format!("{} |-> {a}", p.name())),
         );
         return Ok(format!("[{}]", fields.join(", ")));
+    }
+    if matches!(p, op::len | op::nth | op::size | op::mass) {
+        return Ok(format!("k_{}({})", p.name(), a.join(", ")));
     }
     if let Some(c) = p.tested() {
         return Ok(format!("({}.tag = \"{}\")", a[0], c.name()));

@@ -13,20 +13,20 @@ run every stage on real tools, include failing examples, and state unsupported
 features. A backend that is absent, times out, or cannot interpret its input
 cannot produce a successful verification result.
 
-## lessons from the reference projects
+## design principles
 
-The following local projects were read as design references, not dependencies:
-
-| project | examined | lesson used |
-| --- | --- | --- |
-| `../verixir-project` | `verixir.ex`, `l2_code.ex`, built-in specs, Fibonacci example | keep `@verifier`, `defv`, `defvp`, `defvg`, `ghost`, `assert`, and `unfold`; separate checking from compilation |
-| `../aristotle` | erlean design, core syntax, contracts, actor invariants | distinguish values, exceptions, unsupported behavior, partial correctness, termination, and scheduling assumptions |
-| `../formal-proofs` | CPU semantics and Hoare rules | state the proposition before automating it; keep semantics separate from code-specific proofs |
-| `../lynx` | term API, translator, translation regressions | preserve provenance, track callees, reject missing semantics, and audit Lean axioms |
-| `../i5h` | kernel trait, design, trust document | put pure decisions behind a small boundary; prove transitions and state the shell's obligations separately |
-
-Verixir's Boogiex is inspired by Boogie; it is not the Boogie executable. This
-project supports actual Boogie programs and the Boogie verifier.
+- Contracts use `@verifier`, `defv`, `defvp`, `defvg`, `ghost`, `assert` and
+  `unfold`. Checking is separate from compilation.
+- Distinguish values, exceptions, unsupported behavior, partial correctness,
+  termination and scheduling assumptions.
+- State the proposition before automating it. Keep semantics separate from
+  code-specific proofs.
+- Preserve provenance, track callees, reject missing semantics and audit Lean
+  axioms.
+- Put pure decisions behind a small boundary. Prove transitions and state the
+  shell's obligations separately.
+- Run real tools: actual Boogie programs go to the Boogie verifier, not to an
+  imitation of it.
 
 ## bounded contexts and directory tree
 
@@ -75,7 +75,7 @@ No result is cached merely by filename, and emitting a file is not verification.
 
 ## one kernel
 
-The initial semantic profile is discrete Erlang values: arbitrary integers,
+The current semantic profile is `erlang.discrete.2`: arbitrary integers,
 atoms (including boolean atoms and Elixir `nil`), proper/improper lists, and
 tuples. `[]` and `nil` are distinct. Exact equality is constructor equality.
 Arithmetic is unbounded integer arithmetic. `div` truncates toward zero and
@@ -96,7 +96,7 @@ replaced by unconstrained values. New profiles extend the same boundaries.
 
 ## contracts and modular reasoning
 
-The public Elixir API is `use :vex` with Verixir-style annotations. Parsing is
+The public Elixir API is `use :vex` with `@verifier` annotations. Parsing is
 read-only: the checker does not compile or execute project code. Runtime macros
 erase proof statements and ghost functions. Verification and application startup
 are independent commands.
@@ -109,7 +109,8 @@ ghost calls require a nonnegative, strictly decreasing measure. A single integer
 argument can supply the default measure; other cases use `@verifier decreases`.
 `unfold` adds a local, guarded instance of a ghost definition. It cannot introduce
 an unchecked global recursive axiom. Assertions generate obligations before their
-facts are available to following statements. Arbitrary `assume` is not a proof API.
+facts are available to following statements. Source `assume` is an explicit admitted hypothesis: it is recorded and makes
+dependent contracts conditional. It cannot produce a successful check.
 
 The return expression `f(original_args)` in `ensures` denotes the current result.
 Other mathematical calls name checked ghost functions. Binding and branch scope
@@ -171,7 +172,7 @@ selective receive or distributed supervision. Add proof-producing translation
 passes to reduce the trusted base. Incremental proof reuse requires transitive
 dependency hashes and tool/profile identities, not just timestamps.
 
-## primary references
+## tool documentation
 
 - [Boogie](https://github.com/boogie-org/boogie): intermediate verification language,
   VC generation, and Z3 backend.
@@ -180,3 +181,11 @@ dependency hashes and tool/profile identities, not just timestamps.
 - [Erlang expressions](https://www.erlang.org/doc/system/expressions.html): runtime
   operations, matching, guards and arithmetic.
 - [TLC](https://docs.tlapl.us/using:tlc:start): explicit-state model checking.
+
+## clauses, proof statements and measures
+
+[Coverage](coverage.md) records the supported features and the rules behind
+them. Clause dispatch, proof statements and measures have focused modules in
+`flow`. The source protocol is `vex.ir.2` and
+its tuple representation uses an actual sequence sort. This changes obligation
+identities through the profile version; old proof files must be regenerated.

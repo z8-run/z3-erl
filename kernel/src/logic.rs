@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum sort {
     term,
+    seq,
     int,
     bool,
 }
@@ -35,6 +36,11 @@ pub enum expr {
         yes: Box<expr>,
         no: Box<expr>,
     },
+    quant {
+        all: bool,
+        vars: Vec<(String, sort)>,
+        body: Box<expr>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +50,16 @@ pub enum op {
     nil,
     cons,
     tuple,
+    empty,
+    push,
+    is_empty,
+    is_push,
+    first,
+    rest,
+    len,
+    nth,
+    size,
+    mass,
     is_int,
     is_atom,
     is_nil,
@@ -67,6 +83,23 @@ pub enum op {
 }
 
 impl expr {
+    pub fn visit(&self, f: &mut impl FnMut(&Self)) {
+        f(self);
+        match self {
+            Self::app { args, .. } | Self::prim { args, .. } => {
+                for a in args {
+                    a.visit(f);
+                }
+            }
+            Self::ite { cond, yes, no } => {
+                for a in [cond, yes, no] {
+                    a.visit(f);
+                }
+            }
+            Self::quant { body, .. } => body.visit(f),
+            _ => {}
+        }
+    }
     pub fn num(n: impl ToString) -> Self {
         Self::integer {
             value: n.to_string(),
@@ -169,6 +202,46 @@ impl expr {
             args: vec![],
         }
     }
+    pub fn empty() -> Self {
+        Self::prim {
+            op: op::empty,
+            args: vec![],
+        }
+    }
+    pub fn tuple(xs: &[Self]) -> Self {
+        Self::one(
+            op::tuple,
+            xs.iter()
+                .rev()
+                .fold(Self::empty(), |t, h| Self::two(op::push, h.clone(), t)),
+        )
+    }
+    pub fn quantify(all: bool, vars: Vec<(String, sort)>, body: Self) -> Self {
+        if matches!(body, Self::boolean { .. }) || vars.is_empty() {
+            return body;
+        }
+        // ∀ x:term, is_int(x) → p(x) iff ∀ i:Int, p(int(i)).
+        // The existential form uses conjunction. This avoids a constructor
+        // quantifier alternation for ordinary integer-indexed specifications.
+        if let [(name, sort::term)] = vars.as_slice() {
+            let test = Self::one(op::is_int, Self::var(name, sort::term));
+            let guard = if all { Self::negate(test) } else { test };
+            let connective = if all { op::or } else { op::and };
+            if let Some(rest) = without(&body, &guard, connective) {
+                let value = Self::one(op::int, Self::var(name, sort::int));
+                return Self::quantify(
+                    all,
+                    vec![(name.clone(), sort::int)],
+                    rest.replace(&BTreeMap::from([(name.clone(), value)])),
+                );
+            }
+        }
+        Self::quant {
+            all,
+            vars,
+            body: Box::new(body),
+        }
+    }
     pub fn list(xs: &[Self], tail: Self) -> Self {
         xs.iter()
             .rev()
@@ -212,6 +285,7 @@ impl expr {
         match self {
             Self::integer { .. } => sort::int,
             Self::boolean { .. } => sort::bool,
+            Self::quant { .. } => sort::bool,
             Self::var { sort, .. } | Self::app { sort, .. } => *sort,
             Self::ite { yes, .. } => yes.sort(),
             Self::prim { op, .. } => op.output(),
@@ -219,6 +293,16 @@ impl expr {
     }
     pub fn symbols(&self, vars: &mut BTreeMap<String, sort>, funs: &mut BTreeMap<String, usize>) {
         match self {
+            Self::quant {
+                vars: bound, body, ..
+            } => {
+                let mut local = BTreeMap::new();
+                body.symbols(&mut local, funs);
+                for (name, _) in bound {
+                    local.remove(name);
+                }
+                vars.extend(local);
+            }
             Self::var { name, sort } => {
                 vars.insert(name.clone(), *sort);
             }
@@ -241,6 +325,33 @@ impl expr {
             _ => {}
         }
     }
+    /// Capture-avoiding substitution for the sorted logical algebra.
+    pub fn replace(&self, values: &BTreeMap<String, Self>) -> Self {
+        let sub = |e: &Self| e.replace(values);
+        match self {
+            Self::var { name, .. } => values.get(name).cloned().unwrap_or_else(|| self.clone()),
+            Self::prim { op, args } => Self::prim {
+                op: *op,
+                args: args.iter().map(sub).collect(),
+            }
+            .simplify(),
+            Self::app { name, args, sort } => Self::app {
+                name: name.clone(),
+                args: args.iter().map(sub).collect(),
+                sort: *sort,
+            },
+            Self::ite { cond, yes, no } => Self::ite(sub(cond), sub(yes), sub(no)),
+            Self::quant { all, vars, body } => {
+                let mut local = values.clone();
+                for (name, _) in vars {
+                    local.remove(name);
+                }
+                let (bound, renamed) = freshen(vars, body, &local);
+                Self::quantify(*all, bound, renamed.replace(&local))
+            }
+            _ => self.clone(),
+        }
+    }
     fn simplify(self) -> Self {
         let Self::prim { op: p, ref args } = self else {
             return self;
@@ -255,6 +366,11 @@ impl expr {
             }
             (op::eq, [a, b]) if a == b => return Self::yes(),
             (op::and | op::or, [a, b]) if a == b => return a.clone(),
+            (op::and | op::or, [a, b])
+                if *a == Self::negate(b.clone()) || *b == Self::negate(a.clone()) =>
+            {
+                return Self::boolean { value: p == op::or };
+            }
             (op::and, [a, b]) if *a == Self::yes() => return b.clone(),
             (op::and, [a, b]) if *b == Self::yes() => return a.clone(),
             (op::and, [a, b]) if *a == Self::no() || *b == Self::no() => return Self::no(),
@@ -297,6 +413,72 @@ impl expr {
     }
 }
 
+fn without(body: &expr, guard: &expr, connective: op) -> Option<expr> {
+    if body == guard {
+        return Some(expr::boolean {
+            value: connective == op::and,
+        });
+    }
+    if let expr::prim { op, args } = body {
+        if *op == connective {
+            if let Some(a) = without(&args[0], guard, connective) {
+                return Some(expr::two(connective, a, args[1].clone()));
+            }
+            if let Some(b) = without(&args[1], guard, connective) {
+                return Some(expr::two(connective, args[0].clone(), b));
+            }
+        }
+    }
+    None
+}
+
+fn freshen(
+    vars: &[(String, sort)],
+    body: &expr,
+    values: &BTreeMap<String, expr>,
+) -> (Vec<(String, sort)>, expr) {
+    let mut free = BTreeMap::new();
+    let mut used = std::collections::BTreeSet::new();
+    for v in values.values() {
+        v.symbols(&mut free, &mut BTreeMap::new());
+    }
+    for v in values.values().chain([body]) {
+        v.visit(&mut |v| match v {
+            expr::var { name, .. } => {
+                used.insert(name.clone());
+            }
+            expr::quant { vars, .. } => {
+                used.extend(vars.iter().map(|(n, _)| n.clone()));
+            }
+            _ => {}
+        });
+    }
+    used.extend(values.keys().cloned());
+    let mut bound = vars.to_vec();
+    let mut rename = BTreeMap::new();
+    for (name, t) in &mut bound {
+        if !free.contains_key(name) {
+            continue;
+        }
+        let mut i = 0;
+        while used.contains(&format!("$bound{i}")) {
+            i += 1;
+        }
+        let fresh = format!("$bound{i}");
+        used.insert(fresh.clone());
+        rename.insert(name.clone(), expr::var(&fresh, *t));
+        *name = fresh;
+    }
+    (
+        bound,
+        if rename.is_empty() {
+            body.clone()
+        } else {
+            body.replace(&rename)
+        },
+    )
+}
+
 fn integer_key(s: &str) -> (bool, &str) {
     let digits = s.strip_prefix('-').unwrap_or(s).trim_start_matches('0');
     (s.starts_with('-') && !digits.is_empty(), digits)
@@ -306,7 +488,13 @@ impl op {
     pub fn constructor(self) -> bool {
         matches!(
             self,
-            Self::int | Self::atom | Self::nil | Self::cons | Self::tuple
+            Self::int
+                | Self::atom
+                | Self::nil
+                | Self::cons
+                | Self::tuple
+                | Self::empty
+                | Self::push
         )
     }
     pub fn tested(self) -> Option<Self> {
@@ -316,6 +504,8 @@ impl op {
             Self::is_nil => Some(Self::nil),
             Self::is_cons => Some(Self::cons),
             Self::is_tuple => Some(Self::tuple),
+            Self::is_empty => Some(Self::empty),
+            Self::is_push => Some(Self::push),
             _ => None,
         }
     }
@@ -326,12 +516,23 @@ impl op {
             Self::head => Some((Self::cons, 0)),
             Self::tail => Some((Self::cons, 1)),
             Self::items => Some((Self::tuple, 0)),
+            Self::first => Some((Self::push, 0)),
+            Self::rest => Some((Self::push, 1)),
             _ => None,
         }
     }
     pub fn output(self) -> sort {
         match self {
-            Self::ival | Self::aval | Self::add | Self::sub | Self::mul | Self::div => sort::int,
+            Self::ival
+            | Self::aval
+            | Self::add
+            | Self::sub
+            | Self::mul
+            | Self::div
+            | Self::len
+            | Self::size
+            | Self::mass => sort::int,
+            Self::items | Self::empty | Self::push | Self::rest => sort::seq,
             Self::eq
             | Self::not
             | Self::and
@@ -342,6 +543,8 @@ impl op {
             | Self::is_atom
             | Self::is_nil
             | Self::is_cons
+            | Self::is_empty
+            | Self::is_push
             | Self::is_tuple => sort::bool,
             _ => sort::term,
         }
@@ -349,6 +552,8 @@ impl op {
     pub fn default(self) -> expr {
         if self.output() == sort::int {
             expr::num(0)
+        } else if self.output() == sort::seq {
+            expr::empty()
         } else {
             expr::nil()
         }
@@ -360,6 +565,16 @@ impl op {
             Self::nil => "nil",
             Self::cons => "cons",
             Self::tuple => "tuple",
+            Self::empty => "empty",
+            Self::push => "push",
+            Self::is_empty => "is_empty",
+            Self::is_push => "is_push",
+            Self::first => "first",
+            Self::rest => "rest",
+            Self::len => "len",
+            Self::nth => "nth",
+            Self::size => "size",
+            Self::mass => "mass",
             Self::is_int => "is_int",
             Self::is_atom => "is_atom",
             Self::is_nil => "is_nil",

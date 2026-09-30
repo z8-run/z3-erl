@@ -1,9 +1,12 @@
 #![allow(non_camel_case_types)]
 //! Contract checking without any knowledge of solver syntax or processes.
+mod clause;
 mod exec;
 pub mod graph;
 pub mod model;
 pub mod pattern;
+mod proof;
+mod rank;
 mod scope;
 pub mod spec;
 
@@ -20,6 +23,13 @@ pub struct contract {
     pub total: bool,
     pub deps: BTreeSet<String>,
     pub conditions: Vec<String>,
+    pub assumptions: Vec<admission>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct admission {
+    pub span: ir::span,
+    pub formula: kernel::logic::expr,
 }
 
 #[derive(Serialize)]

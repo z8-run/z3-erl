@@ -8,8 +8,8 @@ pub mod model;
 pub mod theory;
 pub mod vc;
 
-pub const version: &str = "vex.ir.1";
-pub const profile: &str = "erlang.discrete.1";
+pub const version: &str = "vex.ir.2";
+pub const profile: &str = "erlang.discrete.2";
 pub const lean: &str = "leanprover/lean4:v4.28.0";
 
 pub fn hash(bytes: &[u8]) -> String {

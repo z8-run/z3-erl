@@ -97,7 +97,16 @@ pub fn check(v: &vc, engine: &str, cfg: &settings) -> Result<evidence> {
         status,
         artifact: path.display().to_string(),
         log: log.display().to_string(),
-        detail,
+        detail: format!(
+            "{}:{}: {}{}\n{detail}",
+            v.span.file.escape_default(),
+            v.span.line,
+            v.kind,
+            v.message
+                .as_ref()
+                .map(|m| format!(": {m}"))
+                .unwrap_or_default()
+        ),
         ms,
     })
 }

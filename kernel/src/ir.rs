@@ -38,6 +38,14 @@ pub struct fun {
     pub name: String,
     pub args: Vec<String>,
     pub mode: mode,
+    pub clauses: Vec<clause>,
+    pub span: span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct clause {
+    pub patterns: Vec<node>,
     pub requires: Vec<node>,
     pub ensures: Vec<node>,
     pub guard: node,
@@ -113,12 +121,28 @@ pub enum kind {
     },
     assert {
         value: Box<node>,
+        #[serde(default)]
+        message: Option<String>,
     },
     ghost {
         body: Box<node>,
     },
     unfold {
         call: Box<node>,
+    },
+    quant {
+        all: bool,
+        vars: Vec<String>,
+        body: Box<node>,
+    },
+    assume {
+        value: Box<node>,
+    },
+    havoc {
+        names: Vec<String>,
+    },
+    local {
+        body: Box<node>,
     },
 }
 
@@ -131,6 +155,17 @@ pub struct arm {
 }
 
 impl node {
+    pub fn erased(&self) -> bool {
+        matches!(
+            self.kind,
+            kind::ghost { .. }
+                | kind::assert { .. }
+                | kind::unfold { .. }
+                | kind::havoc { .. }
+                | kind::assume { .. }
+                | kind::local { .. }
+        )
+    }
     pub fn var(name: &str) -> Self {
         Self {
             line: 0,

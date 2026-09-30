@@ -34,7 +34,14 @@ defmodule :vex do
 
   defmacro ghost(do: _body), do: nil
   defmacro assert(_expr), do: nil
+  defmacro assert(_expr, _message), do: nil
   defmacro unfold(_expr), do: nil
+  defmacro assume(_expr), do: nil
+  defmacro havoc(_var), do: nil
+  defmacro block(do: _body), do: nil
+  defmacro forall(_vars, do: _body), do: nil
+  defmacro exists(_vars, do: _body), do: nil
+  defmacro term_size(_expr), do: raise(ArgumentError, "term_size is a proof operation")
 
   defp define(kind, head, body) do
     clean = erase(body)
@@ -47,8 +54,17 @@ defmodule :vex do
 
   defp erase(ast) do
     Macro.prewalk(ast, fn
-      {name, _, _} when name in [:ghost, :assert, :unfold] -> nil
-      other -> other
+      {:__block__, meta, items} ->
+        items = Enum.reject(items, &proof?/1)
+        if items == [], do: nil, else: {:__block__, meta, items}
+
+      other ->
+        if proof?(other), do: nil, else: other
     end)
   end
+
+  defp proof?({name, _, args}) when is_list(args),
+    do: name in [:ghost, :assert, :unfold, :assume, :havoc, :block]
+
+  defp proof?(_), do: false
 end

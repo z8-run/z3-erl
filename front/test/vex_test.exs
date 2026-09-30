@@ -37,7 +37,7 @@ defmodule :vex_test do
     """)
 
     result = :vex_read.files([path])
-    assert [%{body: %{value: "123456789012345678901234567890"}}] = result.functions
+    assert [%{clauses: [%{body: %{value: "123456789012345678901234567890"}}]}] = result.functions
     assert [%{owner: "Safe.unchecked/0"}] = result.skipped
   end
 end

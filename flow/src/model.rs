@@ -27,8 +27,7 @@ pub fn export(w: &world, id: &str) -> Result<export> {
         .map(|n| e::one(kernel::logic::op::int, e::var(n, sort::int)))
         .collect();
     let pre = spec::pre(w, f, &args)?;
-    let mut vars = spec::bind(f, &args);
-    let (value, safe) = body(w, f, &f.body, &mut vars, 0)?;
+    let (value, safe) = dispatch(w, f, &args, 0)?;
     Ok(export {
         args: f.args.clone(),
         pre: e::all([pre.safe, e::true_term(pre.term), safe]),
@@ -46,7 +45,9 @@ fn body(w: &world, f: &fun, n: &node, vars: &mut env, depth: usize) -> Result<(e
             let mut safe = vec![];
             for n in items {
                 let (v, s) = body(w, f, n, vars, depth + 1)?;
-                last = v;
+                if !n.erased() {
+                    last = v;
+                }
                 safe.push(s);
             }
             Ok((last, e::all(safe)))
@@ -90,13 +91,7 @@ fn body(w: &world, f: &fun, n: &node, vars: &mut env, depth: usize) -> Result<(e
             }
             let pre = spec::pre(w, callee, &values)?;
             safe.extend([pre.safe, e::true_term(pre.term)]);
-            let (v, s) = body(
-                w,
-                callee,
-                &callee.body,
-                &mut spec::bind(callee, &values),
-                depth + 1,
-            )?;
+            let (v, s) = dispatch(w, callee, &values, depth + 1)?;
             safe.push(s);
             Ok((v, e::all(safe)))
         }
@@ -114,4 +109,24 @@ fn body(w: &world, f: &fun, n: &node, vars: &mut env, depth: usize) -> Result<(e
             Ok((v.term, v.safe))
         }
     }
+}
+
+fn dispatch(w: &world, f: &fun, args: &[e], depth: usize) -> Result<(e, e)> {
+    let mut value = e::atom(2);
+    let mut safe = vec![];
+    let mut domain = vec![];
+    for branch in spec::select(w, f, args)?.into_iter().rev() {
+        let (v, s) = body(
+            w,
+            f,
+            &branch.clause.body,
+            &mut branch.vars.clone(),
+            depth + 1,
+        )?;
+        safe.push(e::implies(branch.test.clone(), s));
+        domain.push(branch.test.clone());
+        value = e::ite(branch.test, v, value);
+    }
+    safe.push(e::any(domain));
+    Ok((value, e::all(safe)))
 }

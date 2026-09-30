@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use kernel::ir::{self, fun, kind, mode, node};
+use kernel::ir::{self, clause, fun, kind, mode, node};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub struct world<'a> {
@@ -23,31 +23,12 @@ impl<'a> world<'a> {
         };
         let mut atoms = BTreeSet::new();
         for f in &input.functions {
-            crate::scope::check(&f.body, true).with_context(|| f.id())?;
             if w.funs.insert(f.id(), f).is_some() {
-                bail!(
-                    "{}: multiple function clauses are not yet supported; use a case body",
-                    f.id()
-                );
+                bail!("duplicate function {}", f.id());
             }
-            let unique: BTreeSet<_> = f.args.iter().collect();
-            if unique.len() != f.args.len() || f.args.iter().any(|s| s == "_") {
-                bail!("{}: arguments must be distinct names", f.id());
-            }
-            for n in f
-                .requires
-                .iter()
-                .chain(&f.ensures)
-                .chain([&f.guard, &f.body])
-                .chain(f.decreases.iter())
-            {
-                walk(n, &mut |n| {
-                    if let kind::atom { value } = &n.kind {
-                        atoms.insert(value.clone());
-                    }
-                });
-            }
+            validate(f, &mut atoms)?;
         }
+
         for (a, i) in [("false", 0), ("true", 1), ("nil", 2)] {
             w.atoms.insert(a.into(), i);
             atoms.remove(a);
@@ -57,16 +38,18 @@ impl<'a> world<'a> {
         }
         for f in &input.functions {
             let mut edges = BTreeSet::new();
-            walk(&f.body, &mut |n| {
-                if let kind::call { module, name, args } = &n.kind {
-                    edges.insert(format!(
-                        "{}.{}/{}",
-                        module.as_deref().unwrap_or(&f.module),
-                        name,
-                        args.len()
-                    ));
-                }
-            });
+            for c in &f.clauses {
+                walk(&c.body, &mut |n| {
+                    if let kind::call { module, name, args } = &n.kind {
+                        edges.insert(format!(
+                            "{}.{}/{}",
+                            module.as_deref().unwrap_or(&f.module),
+                            name,
+                            args.len()
+                        ));
+                    }
+                });
+            }
             for e in &edges {
                 if !w.funs.contains_key(e) {
                     bail!(
@@ -80,7 +63,10 @@ impl<'a> world<'a> {
             w.edges.insert(f.id(), edges);
         }
         for f in &input.functions {
-            if f.mode == mode::ghost && w.recursive(f) && w.rank(f).is_none() {
+            if f.mode == mode::ghost
+                && w.recursive(f)
+                && f.clauses.iter().any(|c| w.rank(f, c).is_none())
+            {
                 bail!(
                     "{}: recursive ghost functions need @verifier decreases (the one-argument default is unavailable)",
                     f.id()
@@ -120,14 +106,26 @@ impl<'a> world<'a> {
     pub fn same_cycle(&self, a: &fun, b: &fun) -> bool {
         a.id() == b.id() || (self.reaches(&a.id(), &b.id()) && self.reaches(&b.id(), &a.id()))
     }
-    pub fn rank(&self, f: &fun) -> Option<node> {
-        f.decreases.clone().or_else(|| {
-            if f.mode == mode::ghost && f.args.len() == 1 && self.recursive(f) {
-                Some(node::var(&f.args[0]))
-            } else {
-                None
-            }
-        })
+    pub fn rank(&self, f: &fun, c: &clause) -> Option<Vec<node>> {
+        c.decreases
+            .as_ref()
+            .map(|n| match &n.kind {
+                kind::tuple { items } => items.clone(),
+                _ => vec![n.clone()],
+            })
+            .or_else(|| {
+                if f.mode == mode::ghost && f.args.len() == 1 && self.recursive(f) {
+                    Some(vec![node::var(&f.args[0])])
+                } else {
+                    None
+                }
+            })
+    }
+    pub fn total(&self, f: &fun) -> bool {
+        self.funs
+            .values()
+            .filter(|g| f.id() == g.id() || self.reaches(&f.id(), &g.id()))
+            .all(|g| !self.recursive(g) || g.clauses.iter().all(|c| self.rank(g, c).is_some()))
     }
 }
 
@@ -169,9 +167,40 @@ pub fn walk(n: &node, f: &mut impl FnMut(&node)) {
             walk(pattern, f);
             walk(value, f);
         }
-        kind::assert { value } => walk(value, f),
-        kind::ghost { body } => walk(body, f),
+        kind::assert { value, .. } | kind::assume { value } => walk(value, f),
+        kind::ghost { body } | kind::local { body } | kind::quant { body, .. } => walk(body, f),
         kind::unfold { call } => walk(call, f),
         _ => {}
     }
+}
+
+fn validate(f: &fun, atoms: &mut BTreeSet<String>) -> Result<()> {
+    let unique: BTreeSet<_> = f.args.iter().collect();
+    if unique.len() != f.args.len() || f.args.iter().any(|s| s == "_") {
+        bail!("{}: arguments must be distinct names", f.id());
+    }
+    if f.clauses.is_empty() {
+        bail!("{}: no clauses", f.id());
+    }
+    for c in &f.clauses {
+        if c.patterns.len() != f.args.len() {
+            bail!("{}: clause arity mismatch", f.id());
+        }
+        crate::scope::check(&c.body, true).with_context(|| f.id())?;
+        for n in c
+            .patterns
+            .iter()
+            .chain(&c.requires)
+            .chain(&c.ensures)
+            .chain([&c.guard, &c.body])
+            .chain(c.decreases.iter())
+        {
+            walk(n, &mut |n| {
+                if let kind::atom { value } = &n.kind {
+                    atoms.insert(value.clone());
+                }
+            });
+        }
+    }
+    Ok(())
 }

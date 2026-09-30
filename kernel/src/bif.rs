@@ -16,6 +16,21 @@ pub fn apply(name: &str, args: &[e]) -> Result<spec> {
         ("is_integer", [a]) => Ok(unary(op::is_int, a)),
         ("is_atom", [a]) => Ok(unary(op::is_atom, a)),
         ("is_tuple", [a]) => Ok(unary(op::is_tuple, a)),
+        ("is_list", [a]) => Ok(spec {
+            value: e::bool_term(e::or(
+                e::one(op::is_nil, a.clone()),
+                e::one(op::is_cons, a.clone()),
+            )),
+            safe: e::yes(),
+        }),
+        ("tuple_size", [a]) => Ok(spec {
+            value: e::one(op::int, e::one(op::len, e::one(op::items, a.clone()))),
+            safe: e::one(op::is_tuple, a.clone()),
+        }),
+        ("term_size", [a]) => Ok(spec {
+            value: e::one(op::int, e::one(op::size, a.clone())),
+            safe: e::yes(),
+        }),
         ("is_boolean", [a]) => Ok(spec {
             value: e::bool_term(e::is_bool(a.clone())),
             safe: e::yes(),
@@ -55,7 +70,7 @@ pub fn apply(name: &str, args: &[e]) -> Result<spec> {
             value: e::one(if name == "hd" { op::head } else { op::tail }, a.clone()),
             safe: e::one(op::is_cons, a.clone()),
         }),
-        ("elem", [a, b]) => element(a, b),
+        ("elem", [a, b]) => Ok(element(a, b)),
         _ => bail!(
             "unsupported operation {name}/{} in {}",
             args.len(),
@@ -107,30 +122,16 @@ pub fn trunc(a: e, b: e) -> e {
     )
 }
 
-fn element(a: &e, b: &e) -> Result<spec> {
-    let e::prim { op: op::int, args } = b else {
-        bail!("elem requires a literal index");
-    };
-    let e::integer { value } = &args[0] else {
-        bail!("elem requires a literal index");
-    };
-    let index: usize = value
-        .parse()
-        .map_err(|_| anyhow::anyhow!("elem index must be nonnegative"))?;
-    if index > 255 {
-        bail!("elem index exceeds profile limit 255");
+fn element(a: &e, b: &e) -> spec {
+    let xs = e::one(op::items, a.clone());
+    let i = e::one(op::ival, b.clone());
+    spec {
+        value: e::two(op::nth, xs.clone(), i.clone()),
+        safe: e::all([
+            e::one(op::is_tuple, a.clone()),
+            e::one(op::is_int, b.clone()),
+            e::two(op::le, e::num(0), i.clone()),
+            e::two(op::lt, i, e::one(op::len, xs)),
+        ]),
     }
-    let mut safe = e::one(op::is_tuple, a.clone());
-    let mut xs = e::one(op::items, a.clone());
-    for step in 0..=index {
-        safe = e::and(safe, e::one(op::is_cons, xs.clone()));
-        if step == index {
-            break;
-        }
-        xs = e::one(op::tail, xs);
-    }
-    Ok(spec {
-        value: e::one(op::head, xs),
-        safe,
-    })
 }

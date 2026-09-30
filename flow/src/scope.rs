@@ -11,8 +11,8 @@ pub fn check(n: &node, statement: bool) -> Result<()> {
                     n.line
                 );
             }
-            check(pattern, false)?;
-            check(value, false)?;
+            let _ = pattern;
+            check(value, true)?;
         }
         kind::block { items } => {
             for n in items {
@@ -46,13 +46,12 @@ pub fn check(n: &node, statement: bool) -> Result<()> {
         kind::case { value, arms } => {
             check(value, false)?;
             for arm in arms {
-                check(&arm.pattern, false)?;
                 check(&arm.guard, false)?;
                 check(&arm.body, true)?;
             }
         }
-        kind::ghost { body } => check(body, true)?,
-        kind::assert { value } => check(value, false)?,
+        kind::ghost { body } | kind::local { body } => check(body, true)?,
+        kind::assert { value, .. } | kind::assume { value } => check(value, false)?,
         kind::unfold { call } => check(call, false)?,
         _ => {}
     }

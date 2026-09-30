@@ -10,6 +10,7 @@ pub enum dialect {
 pub fn sort_name(s: sort, d: dialect) -> &'static str {
     match (s, d) {
         (sort::term, _) => "term",
+        (sort::seq, _) => "seq",
         (sort::int, dialect::bpl) => "int",
         (sort::int, _) => "Int",
         (sort::bool, dialect::lean) => "Prop",
@@ -50,6 +51,7 @@ pub fn render(e: &expr, d: dialect) -> String {
             }
         }
         expr::prim { op, args } => primitive(*op, args, d),
+        expr::quant { all, vars, body } => quantifier(*all, vars, body, d),
     }
 }
 
@@ -81,13 +83,23 @@ fn apply(name: &str, args: &[expr], d: dialect, constant: bool) -> String {
 }
 
 fn primitive(p: op, args: &[expr], d: dialect) -> String {
-    if p.constructor() || p.tested().is_some() || p.selected().is_some() {
-        let prefix = if d == dialect::lean {
-            if p.constructor() { "term." } else { "kernel." }
-        } else {
-            "k_"
+    if p.constructor()
+        || p.tested().is_some()
+        || p.selected().is_some()
+        || matches!(p, op::len | op::nth | op::size | op::mass)
+    {
+        let prefix = match (d, p.constructor(), p.output()) {
+            (dialect::lean, true, sort::seq) => "seq.",
+            (dialect::lean, true, _) => "term.",
+            (dialect::lean, false, _) => "kernel.",
+            _ => "k_",
         };
-        return apply(&format!("{prefix}{}", p.name()), args, d, p == op::nil);
+        return apply(
+            &format!("{prefix}{}", p.name()),
+            args,
+            d,
+            matches!(p, op::nil | op::empty),
+        );
     }
     let sign = match (p, d) {
         (op::eq, dialect::bpl) => "==",
@@ -119,5 +131,37 @@ fn primitive(p: op, args: &[expr], d: dialect) -> String {
         format!("({sign} {})", args[0])
     } else {
         format!("({} {sign} {})", args[0], args[1])
+    }
+}
+
+fn quantifier(all: bool, vars: &[(String, sort)], body: &expr, d: dialect) -> String {
+    let binders = vars
+        .iter()
+        .map(|(n, t)| match d {
+            dialect::smt => format!("({} {})", kernel::name(n), sort_name(*t, d)),
+            _ => format!("{} : {}", kernel::name(n), sort_name(*t, d)),
+        })
+        .collect::<Vec<_>>();
+    let body = render(body, d);
+    match d {
+        dialect::smt => format!(
+            "({} ({}) {body})",
+            if all { "forall" } else { "exists" },
+            binders.join(" ")
+        ),
+        dialect::bpl => format!(
+            "({} {} :: {body})",
+            if all { "forall" } else { "exists" },
+            binders.join(", ")
+        ),
+        dialect::lean => format!(
+            "({} {}, {body})",
+            if all { "∀" } else { "∃" },
+            binders
+                .iter()
+                .map(|s| format!("({s})"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
     }
 }

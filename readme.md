@@ -21,6 +21,7 @@ bin/setup.sh
 bin/vex check demo/fib.ex
 bin/vex check /path/to/your/app/lib --strict
 bin/vex check demo/basic.ex --engine all
+bin/vex check demo/paper.ex --engine all
 bin/vex check --config demo/counter/vex.toml
 bin/vex model demo/mailbox/mailbox.tla
 ```
@@ -49,7 +50,8 @@ end
 ```
 
 `defv` is public, `defvp` is private, and `defvg` is mathematical ghost code.
-Contracts can also precede ordinary `def`/`defp`. In a postcondition,
+Contracts can also precede ordinary `def`/`defp` without proof statements.
+Use `defv`/`defvp` when proof code needs runtime erasure. In a postcondition,
 `step(state, delta)` denotes this invocation's return value. Other specification
 calls refer to verified ghost functions. `ghost`, `assert`, and `unfold` have no
 runtime effects. The checker parses quoted source without running application
@@ -57,9 +59,32 @@ code or expanding application macros.
 
 The [Fibonacci example](demo/fib.ex) demonstrates ghost definitions,
 accumulator invariants, unfolding and checked termination. A recursive ghost
-function must have a decreasing nonnegative integer measure. A single argument
-provides the default; use `@verifier decreases n - i` for other cases. Executable
+function must have a well-founded measure. Integers must be nonnegative; other
+values use structural size. A single argument provides the default. Use
+`@verifier decreases n - i`, `term_size(xs)` or a lexicographic tuple `{n, m}`
+for explicit measures. Each recursive clause needs a measure. Executable
 recursion without a checked measure is reported as **partial correctness**.
+
+The [clause and proof demo](demo/paper.ex) covers tuple access, clause dispatch, nested
+matches and structural recursion. [Coverage](docs/coverage.md) lists the supported features.
+Quantifiers bind arbitrary profile values, so restrict their domain explicitly:
+
+```elixir
+ghost do
+  havoc x
+  assert forall y, do: y === y
+  assert exists y, do: y === x
+  block do
+    assert x === x, "reflexivity"
+  end
+end
+```
+
+`block` isolates proof variables and facts. `havoc` introduces a fresh arbitrary
+value in ghost code. `assume` is available for explicit admitted hypotheses and
+always makes dependent results conditional. Trailing proof statements are erased
+without replacing the preceding runtime return value. `unfold` can expose a
+verified total function; it cannot unfold the current recursive component.
 
 ## choose an engine
 
@@ -121,7 +146,7 @@ dependency and artifact directories and does not follow nested symlinks.
 For TLA+ source exports, arguments are mathematical integers and the return is a
 kernel term record. A model can use `step(balance, delta).ival` after checking
 `step_pre(balance, delta)`. Exports currently support nonrecursive pure functions,
-bindings and `if`. [The counter model](demo/counter/counter.tla) imports the
+ordered function clauses, bindings and `if`. [The counter model](demo/counter/counter.tla) imports the
 generated `vex.tla` module. [The mailbox model](demo/mailbox/mailbox.tla) shows
 explicit actors, mailboxes and interleavings. The author supplies runtime
 abstractions, bounds and fairness assumptions. A TLC pass is a result for that
@@ -147,20 +172,23 @@ result and contains source hashes, a verifier build fingerprint, tool versions,
 coverage, contract dependencies, proof evidence and log paths. No proof-result
 cache is enabled. A failed dependency makes its callers unproved. Missing tools,
 timeouts, unknown results, empty selections and unsupported syntax cannot produce
-a successful contract check. Exit codes: `0` successful selected checks, `1`
+a successful contract check. Source `assume` statements are recorded; dependent
+contracts are `conditional` and `check` exits 1. Exit codes: `0` successful selected checks, `1`
 unmet verification obligations/models, `2` invalid input or setup.
 
 ## supported today
 
-The `erlang.discrete.1` profile supports arbitrary integers, atoms, boolean atoms,
+The `erlang.discrete.2` profile supports arbitrary integers, atoms, boolean atoms,
 Elixir `nil`, proper/improper lists, tuples, exact equality, integer comparisons,
-integer arithmetic with Erlang `div`/`rem`, type predicates, `hd`, `tl`, literal
-`elem`, statement bindings, `if`, ordered `case` patterns, and contracted local/qualified
-calls. Comparisons require integer operands; cross-type term ordering is outside
+integer arithmetic with Erlang `div`/`rem`, type predicates (including `is_list`),
+`hd`, `tl`, `tuple_size`, symbolic `elem`, nested match patterns, statement bindings,
+`if`, ordered `case` and function clauses, and contracted local/qualified calls. Comparisons require integer operands; cross-type term ordering is outside
 this profile. Runtime failures within supported operations are safety obligations.
 
-Function heads currently use distinct named arguments and one clause. Put
-patterns and dispatch in `case`. Ordinary macro expansion, aliases/imports,
+Function clauses accept argument patterns, guards and their own contracts.
+Requirements constrain the selected runtime clause; a failed requirement cannot
+select a later clause. Every clause of a selected function must be included.
+Ordinary macro expansion, aliases/imports,
 compile hooks, floats, maps, binaries, exceptions, higher-order/dynamic calls,
 NIFs, ETS, `spawn`/`send`/`receive`, and automatic OTP extraction are unsupported.
 Pure transitions can be isolated and imported into explicit TLA+ models. The
@@ -173,8 +201,8 @@ boundaries and extension points.
 bin/check.sh
 ```
 
-The [design](docs/design.md) records the study of Verixir, Aristotle, formal-proofs,
-Lynx and i5h, the reasons for each component, and the full extension plan. The
+The [design](docs/design.md) records the design principles, the reasons for each
+component, and the full extension plan. The
 [protocol](docs/protocol.md) describes stage inputs and outputs. Paths, project
 types and functions use lowercase names; mandatory ecosystem filenames such as
 `Cargo.toml` keep their required spelling.

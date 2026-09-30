@@ -1,12 +1,12 @@
 defmodule :vex_read do
   @moduledoc false
-  @ops ~w(+ - * div rem < <= > >= === !== == != and or && || not ! is_integer is_atom is_tuple is_boolean is_nil hd tl elem)a
-  @erl ~w(+ - * div rem < > >= == not is_integer is_atom is_tuple is_boolean hd tl)a
+  @ops ~w(+ - * div rem < <= > >= === !== == != and or && || not ! is_integer is_atom is_tuple is_boolean is_nil is_list tuple_size hd tl elem)a
+  @erl ~w(+ - * div rem < > >= == not is_integer is_atom is_tuple is_boolean is_list tuple_size hd tl)a
 
   def files(paths) do
     Enum.reduce(
       paths,
-      %{version: "vex.ir.1", files: [], functions: [], skipped: [], seen: MapSet.new()},
+      %{version: "vex.ir.2", files: [], functions: [], skipped: [], seen: MapSet.new()},
       fn path, out ->
         text = File.read!(path)
         ast = Code.string_to_quoted!(text, file: path, columns: true)
@@ -16,8 +16,9 @@ defmodule :vex_read do
     )
     |> Map.delete(:seen)
     |> Map.update!(:files, &Enum.reverse/1)
-    |> Map.update!(:functions, &Enum.reverse/1)
+    |> Map.update!(:functions, &group(Enum.reverse(&1)))
     |> Map.update!(:skipped, &Enum.reverse/1)
+    |> complete()
   end
 
   defp read_top({:__block__, _, items}, path, out),
@@ -102,10 +103,8 @@ defmodule :vex_read do
         loc = %{file: path, line: meta[:line] || 1}
 
         if pending != [] or kind in [:defv, :defvp, :defvg] do
-          names = Enum.map(args, &arg(&1, path))
-
-          if length(Enum.uniq(names)) != length(names),
-            do: fail(path, loc.line, "duplicate arguments")
+          if kind in [:def, :defp] and has_proof?(body),
+            do: fail(path, loc.line, "proof statements require defv or defvp for runtime erasure")
 
           ranks = Keyword.get_values(pending, :decreases)
 
@@ -115,13 +114,19 @@ defmodule :vex_read do
           fun = %{
             module: module,
             name: Atom.to_string(name),
-            args: names,
+            args: Enum.with_index(args, fn _, i -> "$arg#{i}" end),
             mode: mode(kind),
-            requires: Enum.map(Keyword.get_values(pending, :requires), &expr(&1, path)),
-            ensures: Enum.map(Keyword.get_values(pending, :ensures), &expr(&1, path)),
-            guard: expr(guard, path),
-            decreases: Enum.find_value(ranks, &expr(&1, path)),
-            body: expr(body, path),
+            clauses: [
+              %{
+                patterns: Enum.map(args, &expr(&1, path)),
+                requires: Enum.map(Keyword.get_values(pending, :requires), &expr(&1, path)),
+                ensures: Enum.map(Keyword.get_values(pending, :ensures), &expr(&1, path)),
+                guard: expr(guard, path),
+                decreases: Enum.find_value(ranks, &expr(&1, path)),
+                body: expr(body, path),
+                span: loc
+              }
+            ],
             span: loc
           }
 
@@ -156,11 +161,61 @@ defmodule :vex_read do
 
   defp head(ast, path), do: fail(path, line(ast), "unsupported function head")
 
-  defp arg({name, _, ctx}, _path) when is_atom(name) and is_atom(ctx) and name != :_,
-    do: Atom.to_string(name)
+  defp group(functions) do
+    {order, grouped} =
+      Enum.reduce(functions, {[], %{}}, fn f, {order, grouped} ->
+        key = {f.module, f.name, length(f.args)}
 
-  defp arg(ast, path),
-    do: fail(path, line(ast), "use named function arguments and case patterns inside the body")
+        case grouped[key] do
+          nil ->
+            {[key | order], Map.put(grouped, key, f)}
+
+          old ->
+            if old.mode != f.mode,
+              do:
+                fail(
+                  f.span.file,
+                  f.span.line,
+                  "clauses must have the same visibility and ghost mode"
+                )
+
+            {order, Map.put(grouped, key, %{old | clauses: [hd(f.clauses) | old.clauses]})}
+        end
+      end)
+
+    Enum.map(Enum.reverse(order), fn key ->
+      f = grouped[key]
+      %{f | clauses: Enum.reverse(f.clauses)}
+    end)
+  end
+
+  defp complete(out) do
+    owners = MapSet.new(out.functions, fn f -> "#{f.module}.#{f.name}/#{length(f.args)}" end)
+
+    for skip <- out.skipped, MapSet.member?(owners, skip.owner) do
+      fail(
+        skip.span.file,
+        skip.span.line,
+        "every clause of a selected function must be included; use defv or annotate this clause"
+      )
+    end
+
+    out
+  end
+
+  defp has_proof?(ast) do
+    {_, found} =
+      Macro.prewalk(ast, false, fn
+        {name, _, args} = ast, _
+        when is_list(args) and name in [:ghost, :assert, :unfold, :assume, :havoc, :block] ->
+          {ast, true}
+
+        ast, found ->
+          {ast, found}
+      end)
+
+    found
+  end
 
   defp module_name({:__aliases__, _, [:"Elixir" | parts]}),
     do: module_id(Enum.join([:"Elixir" | parts], "."))
@@ -196,8 +251,41 @@ defmodule :vex_read do
   defp expr({:=, meta, [pattern, value]}, path),
     do: node("bind", meta, pattern: expr(pattern, path), value: expr(value, path))
 
+  defp expr({kind, meta, [vars, [do: body]]}, path) when kind in [:forall, :exists] do
+    vars = if is_list(vars), do: vars, else: [vars]
+
+    names =
+      Enum.map(vars, fn
+        {name, _, ctx} when is_atom(name) and is_atom(ctx) and name != :_ -> Atom.to_string(name)
+        ast -> fail(path, line(ast), "quantifiers bind named variables")
+      end)
+
+    if names == [] or length(names) != length(Enum.uniq(names)),
+      do: fail(path, meta[:line], "quantifier variables must be distinct")
+
+    node("quant", meta, all: kind == :forall, vars: names, body: expr(body, path))
+  end
+
+  defp expr({:assume, meta, [value]}, path), do: node("assume", meta, value: expr(value, path))
+
+  defp expr({:havoc, meta, args}, path) when is_list(args) do
+    names =
+      Enum.map(args, fn
+        {name, _, ctx} when is_atom(name) and is_atom(ctx) and name != :_ -> Atom.to_string(name)
+        ast -> fail(path, line(ast), "havoc requires named variables")
+      end)
+
+    node("havoc", meta, names: names)
+  end
+
+  defp expr({:block, meta, [[do: body]]}, path), do: node("local", meta, body: expr(body, path))
+
   defp expr({:ghost, meta, [[do: body]]}, path), do: node("ghost", meta, body: expr(body, path))
   defp expr({:assert, meta, [value]}, path), do: node("assert", meta, value: expr(value, path))
+
+  defp expr({:assert, meta, [value, message]}, path) when is_binary(message),
+    do: node("assert", meta, value: expr(value, path), message: message)
+
   defp expr({:unfold, meta, [call]}, path), do: node("unfold", meta, call: expr(call, path))
 
   defp expr({:{}, meta, items}, path),
@@ -221,7 +309,7 @@ defmodule :vex_read do
   defp expr({name, meta, ctx}, _path) when is_atom(name) and is_atom(ctx),
     do: node("var", meta, name: Atom.to_string(name))
 
-  defp expr({name, meta, args}, path) when name in @ops and is_list(args),
+  defp expr({name, meta, args}, path) when (name in @ops or name == :term_size) and is_list(args),
     do: node("op", meta, name: Atom.to_string(name), args: Enum.map(args, &expr(&1, path)))
 
   defp expr({{:., _, [module, name]}, meta, args}, path) when is_atom(name) and is_list(args) do

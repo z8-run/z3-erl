@@ -3,7 +3,7 @@
 ## what a successful check means
 
 For each selected function, the generated obligations establish its stated
-return contract and supported operation safety under `erlang.discrete.1` and the
+return contract and supported operation safety under `erlang.discrete.2` and the
 recorded precondition/guard. Dependencies must also pass. A checked measure gives
 termination for supported recursive calls; otherwise recursive executable code
 is explicitly partial. An inconsistent precondition can make a contract vacuous;
@@ -41,13 +41,13 @@ The datatype contains integers, atoms, list nil, cons and tuples. Atom identitie
 are interned injectively in the plan; `false`, `true` and `nil` have fixed identities
 0, 1 and 2. This representation does not supply lexicographic atom ordering.
 
-SMT and Lean use inductive terms. Boogie uses constructor tags, projections,
-reconstruction and disjointness axioms generated from the same description. The
-Boogie theory permits additional non-well-founded values, an overapproximation;
-vex proves formulas for that larger class rather than adding an induction axiom.
-Boogie counterexamples may therefore be spurious. The kernel also admits malformed
-tuple spines as an overapproximation. Its actual tuple constructors emit proper
-spines and tuple patterns check exact shape.
+SMT and Lean use mutually inductive terms and finite tuple-field sequences.
+Boogie uses constructor tags, projections, reconstruction and disjointness axioms
+from the same description. The recursive size and indexing equations come from
+the shared kernel. Additional induction lemmas for length, positive size and
+sequence extensionality have audited Lean proofs. The first-order Boogie encoding
+can still have nonstandard models; a counterexample need not describe an actual
+finite Erlang value. Tuples no longer admit improper field spines.
 
 All verification statements concern values in this profile. Unmodeled runtime
 values are not encoded as arbitrary integers. Imported TLA+ source functions have
@@ -61,7 +61,10 @@ A condition's success is separate from its owner's success. Proof assertions and
 callee summaries may be used while checking later obligations, but every earlier
 obligation and every transitive dependency must pass before the contract is
 reported proved. Recursive ghost definitions require a well-founded measure;
-their equations are unfolded locally only. There is no user `assume` directive.
+their equations are unfolded locally only. Source `assume` directives are explicitly recorded admissions. The owner and all
+transitive callers are reported `conditional`, never `proved`, and `check` fails.
+A passing per-condition Lean theorem can still have an admitted source formula
+as a hypothesis; the contract report must therefore be consulted.
 
 Solver output is classified using exit status and complete success markers.
 Timeouts kill the child process group. Logs and artifacts are preserved. Results

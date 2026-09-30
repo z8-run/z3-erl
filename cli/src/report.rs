@@ -11,6 +11,7 @@ pub struct contract {
     pub status: String,
     pub conditions: Vec<String>,
     pub depends_on: BTreeSet<String>,
+    pub assumptions: Vec<flow::admission>,
 }
 
 #[derive(Serialize)]
@@ -37,23 +38,8 @@ pub fn contracts(plan: &flow::plan, results: &[Vec<evidence>], engine: &str) -> 
         .filter(|r| jobs::passed(r, engine))
         .filter_map(|r| r.first().map(|r| r.id.clone()))
         .collect();
-    let mut failed: BTreeSet<_> = plan
-        .contracts
-        .iter()
-        .filter(|c| c.conditions.iter().any(|id| !passed.contains(id)))
-        .map(|c| c.owner.clone())
-        .collect();
-    loop {
-        let before = failed.len();
-        for c in &plan.contracts {
-            if c.deps.iter().any(|id| failed.contains(id)) {
-                failed.insert(c.owner.clone());
-            }
-        }
-        if before == failed.len() {
-            break;
-        }
-    }
+    let failed = closure(plan, |c| c.conditions.iter().any(|id| !passed.contains(id)));
+    let conditional = closure(plan, |c| !c.assumptions.is_empty());
     plan.contracts
         .iter()
         .map(|c| contract {
@@ -62,14 +48,37 @@ pub fn contracts(plan: &flow::plan, results: &[Vec<evidence>], engine: &str) -> 
             correctness: if c.total { "total" } else { "partial" }.into(),
             status: if failed.contains(&c.owner) {
                 "unproved"
+            } else if conditional.contains(&c.owner) {
+                "conditional"
             } else {
                 "proved"
             }
             .into(),
             conditions: c.conditions.clone(),
             depends_on: c.deps.clone(),
+            assumptions: c.assumptions.clone(),
         })
         .collect()
+}
+
+fn closure(plan: &flow::plan, seed: impl Fn(&flow::contract) -> bool) -> BTreeSet<String> {
+    let mut out: BTreeSet<_> = plan
+        .contracts
+        .iter()
+        .filter(|c| seed(c))
+        .map(|c| c.owner.clone())
+        .collect();
+    loop {
+        let before = out.len();
+        for c in &plan.contracts {
+            if c.deps.iter().any(|id| out.contains(id)) {
+                out.insert(c.owner.clone());
+            }
+        }
+        if out.len() == before {
+            return out;
+        }
+    }
 }
 
 pub fn show(r: &report, json: bool) -> anyhow::Result<()> {

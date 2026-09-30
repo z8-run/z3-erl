@@ -2,9 +2,10 @@
 
 ## discrete values
 
-`kernel::theory::terms` declares `int`, `atom`, `nil`, `cons`, and `tuple` once.
+`erlang.discrete.2` uses `kernel::theory::datatypes` to declare `int`, `atom`,
+`nil`, `cons`, and `tuple`, plus the finite `seq` sort with `empty` and `push`.
 SMT-LIB, Boogie, Lean and TLA+ printers consume that description. A tuple wraps a
-list of fields; tuple patterns check every field and the terminating nil. An
+finite sequence of fields; tuple patterns check every field and its exact length. An
 improper list uses an arbitrary tail. `[]` is list nil; Elixir `nil` is an atom.
 
 Arithmetic uses unbounded integers. `div(a,b)` divides absolute magnitudes then
@@ -21,12 +22,21 @@ Exact and nonexact equality coincide within the supported discrete profile.
 Short-circuited expressions impose no runtime safety requirement on the skipped
 branch. Predicates themselves are total over the discrete term domain.
 
+`is_list` returns true for both empty and nonempty cons cells, including improper
+lists, matching OTP. `tuple_size` requires a tuple. `elem` accepts any integer
+index with `0 <= i < tuple_size(t)`; indices are zero based and have no artificial
+255 limit. Recursive sequence equations are shared by all proof targets. Size
+positivity, sequence length and field extensionality lemmas are checked in
+`kernel/lean/seq.lean` on the pinned toolchain.
+
 ## functions and scopes
 
 Source parameters are universally quantified. Each requires expression must be
-well-defined after preceding requires facts. The guard further restricts the
-domain. This profile conservatively requires guard operations to be well-defined;
-it does not yet model guard exceptions falling through to another function clause.
+well-defined after preceding requires facts. The runtime guard further restricts the
+domain. A guard operation error or a non-true result rejects that clause and
+tries the next one. Guards are checked against the supported Elixir guard syntax.
+Clause dispatch considers patterns and guards in source order, independently of
+requirements. Calls must establish the requirements of the selected clause.
 
 Assignments used as statements may rebind names. Bindings inside argument lists,
 operators and conditions are rejected: Elixir's sibling-expression scope requires
@@ -35,7 +45,9 @@ Pattern variables are fresh within a pattern and
 repeated occurrences require equality. `case` clauses are considered in source
 order, with prior matches excluded; uncovered paths create a coverage obligation.
 Variables introduced in a case/if branch or ghost block do not escape that scope.
-Pin patterns, multiple head clauses and destructuring arguments remain unsupported.
+Nested match patterns and ordered function clauses use the same matcher. Pin
+patterns remain unsupported. Head patterns can bind an alias, such as `[h | t] = xs`,
+for referring to the complete original argument in contracts.
 
 The contract's parameter names refer to original inputs, even if the body rebinds
 them. A self call with those exact symbolic arguments in ensures denotes the
@@ -43,16 +55,38 @@ current return value. Other specification calls must name ghost functions whose
 preconditions hold. Calls to executable functions use modular summaries after
 checking their preconditions. Unknown callees and remote private calls fail.
 
-Ghost functions and erased proof blocks only call other ghosts. In particular,
-an erased computation cannot establish a fact using a partial runtime function's
-postcondition. Recursive ghosts need a nonnegative
-integer measure decreasing on each call in their recursive component. Unfolding
+Ghost functions and erased proof blocks can call verified total functions.
+An erased computation cannot establish a fact using a partial runtime function's
+postcondition. Recursive ghosts need a well-founded measure decreasing on every
+call in their recursive component. Integer components are nonnegative; other
+terms use structural size. Tuple decreases annotations denote lexicographic
+components. `term_size(t)` explicitly measures a term, including integer leaves. Unfolding
 instantiates a checked ghost body locally; the expanded recursive calls retain
-their modular summaries. While verifying a ghost definition, unfolding its own
+their modular summaries. While verifying a definition, unfolding its own
 recursive component is rejected: otherwise a future instance could justify its
 own unproved contract. Decreasing ghost calls supply the induction hypothesis.
 Missing termination or any failed dependency invalidates
 the owner's final success. Executable recursion can instead be explicitly partial.
+
+## proof statements
+
+Assertions check definedness and truth before contributing a fact; an optional
+literal message is retained in the plan and failure diagnostic. `forall` and
+`exists` bind profile terms lexically. Their predicates must be boolean and
+well-defined for every bound value, including for existential specifications.
+Logical substitution renames binders when needed to avoid variable capture.
+
+`havoc` introduces fresh ghost values. `block` verifies a local proof and restores
+both its environment and facts. `assume` checks definedness and boolean type,
+records an admission, and adds its formula. Admissions make the containing
+contract and all dependent contracts conditional, even when all solver formulas
+pass. They cannot make `check` succeed. Ordinary branch and contract assumptions
+are generated by the verification rules and are not admissions.
+
+Ghost statements are removed from sequences in both the verifier and runtime
+macros. A trailing ghost leaves the preceding runtime result intact; a body
+containing only proof statements returns `nil`. Use `defv`/`defvp` for proof
+statements; ordinary `def`/`defp` contracts are accepted only without such code.
 
 ## effects and concurrency
 
