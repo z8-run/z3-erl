@@ -10,6 +10,26 @@ use kernel::{
 };
 
 impl check<'_, '_> {
+    pub(crate) fn quantified(&mut self, f: &fun, n: &node, mut s: state) -> Result<paths> {
+        if !s.proof {
+            bail!("quantifiers belong in contracts and ghost code");
+        }
+        let v = spec::eval(self.world, f, &s.vars, n, None)?;
+        for id in &v.deps {
+            let callee = self.world.funs[id];
+            // Specification evaluation does not emit recursive decrease obligations.
+            // A quantified value must not introduce an unchecked recursive equation.
+            if self.world.same_cycle(f, callee) || !self.world.total(callee) {
+                bail!(
+                    "quantified values require total calls outside the current recursive component"
+                );
+            }
+        }
+        s.deps.extend(v.deps);
+        self.require(&mut s, n, "quantifier_domain", v.safe);
+        Ok(vec![(s, v.term)])
+    }
+
     pub(crate) fn proof(&mut self, f: &fun, n: &node, s: state, depth: usize) -> Result<paths> {
         Ok(match &n.kind {
             kind::assert { value, .. } => {

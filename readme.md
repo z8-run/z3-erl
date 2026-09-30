@@ -22,6 +22,7 @@ bin/vex check demo/fib.ex
 bin/vex check /path/to/your/app/lib --strict
 bin/vex check demo/basic.ex --engine all
 bin/vex check demo/paper.ex --engine all
+bin/vex check demo/dafny --engine z3
 bin/vex check --config demo/counter/vex.toml
 bin/vex model demo/mailbox/mailbox.tla
 ```
@@ -29,6 +30,13 @@ bin/vex model demo/mailbox/mailbox.tla
 `bin/vex` builds the Rust CLI and preserves your current directory when resolving
 input paths. For repeated runs, use `target/debug/vex` directly. A moved binary
 can find its companion files through `VEX_ROOT=/path/to/this/repository`.
+
+`make help` lists unnumbered commands in run order. Use `make check src=lib
+engine=boogie`, or `make check-dafny sample=expr engine=z3` to include a sample's
+dependencies. `jobs`, `timeout` (milliseconds), and `out` are configurable.
+`make test-dafny` runs the [Dafny translations](demo/dafny/readme.md), including
+runtime comparisons and rejected mutations; select one regression with
+`make test-dafny case=test_dafny.dafny.test_maximum`.
 
 To compile the annotations in your application, add the local Elixir package:
 
@@ -211,3 +219,26 @@ types and functions use lowercase names; mandatory ecosystem filenames such as
 operations, backends and actor refinement without mixing the component boundaries.
 The GitHub workflow runs the same setup and validation scripts on Linux.
 See [validation](docs/check.md) for the executed checks and their scope.
+
+## acknowledgements
+
+Parts of the design adapt ideas from [Lynx](https://github.com/josevalim/lynx):
+its term API, its translator and its translation regressions. From these, vex
+keeps provenance, tracks callees, rejects missing semantics and audits Lean
+axioms. Lynx is licensed under the
+[Apache License, Version 2.0](https://github.com/josevalim/lynx/blob/main/LICENSE)
+([text](https://www.apache.org/licenses/LICENSE-2.0)). Using ideas from Lynx
+does not mean that the Lynx authors endorse vex.
+
+Some verification ideas follow [Dafny](https://github.com/dafny-lang/dafny):
+contracts, ghost code, quantified specifications and lexicographic `decreases`
+measures. Dafny is licensed under the
+[MIT License](https://github.com/dafny-lang/dafny/blob/master/LICENSE.txt)
+(Copyright (c) Microsoft Corporation). Using ideas from Dafny does not mean that
+its authors endorse vex.
+
+The contract syntax (`@verifier`, `defv`, `defvp`, `defvg`, `ghost`, `assert`,
+`unfold`) and several verification rules follow Adrián Enríquez Ballester,
+*Program Verification in Elixir* (*Verificación de programas en Elixir*), Master's
+thesis supervised by Manuel Montenegro Montes, Universidad Complutense de Madrid,
+2022.

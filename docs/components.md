@@ -369,6 +369,11 @@ The main rules:
 
 ### `proof.rs`: erased proof statements
 
+`quantified` evaluates a quantified ghost value through `flow::spec`, checks
+its boolean domain and definedness, and records dependencies. It rejects runtime
+quantifiers, partial calls and calls within the enclosing recursive component,
+where specification evaluation would otherwise bypass decrease checking.
+
 | statement | rule |
 | --- | --- |
 | `assert e` | `assert` obligation, then a fact |
@@ -760,7 +765,7 @@ refinement step would use.
 | `bin/vex` | Builds the `vex` crate quietly, sets `VEX_ROOT`, then runs `target/debug/vex` |
 | `bin/setup.sh` | Checks prerequisites, installs Boogie 3.5.6 into `.tools/boogie`, downloads TLC 1.7.4 and checks its SHA-256, installs Lean 4.28.0 through elan, builds Rust and the Lean library, and runs `vex doctor` |
 | `bin/check.sh` | `cargo fmt --check`, `clippy -D warnings`, `cargo test`, `lake build`, `mix format --check-formatted`, `mix test`, `vex doctor`, the Python suites, then `vex check --config vex.toml` |
-| `Makefile` | Numbered step-by-step targets (`make help`) that wrap the readme commands. The expected-failure targets assert exit code 1 |
+| `Makefile` | Unnumbered commands listed in run order by `make help`. `check` accepts source paths and backend settings; `check-dafny` selects a translation with its dependencies; `test-dafny` runs focused regressions. Group recipes run sequentially even with `make -j`. Expected-failure targets assert exit code 1 |
 | `.github/workflows/check.yml` | Ubuntu CI: installs OTP/Elixir, .NET 8, Java 21, Z3, elan and Rust 1.93, then runs `bin/setup.sh` and `bin/check.sh` |
 | `vex.toml` | The repository's own example project: three sources, engine z3, and the counter and mailbox models |
 | `kernel/tests/vc.rs` | Proof ids survive relocation but change with the obligation |
@@ -768,6 +773,7 @@ refinement step would use.
 | `front/test/vex_test.exs` | Runtime erasure; the parser never executes source; large integer literals survive |
 | `tests/test_cli.py` | End-to-end CLI cases on real tools: all backends, false postconditions, injection, failed callees, safety and coverage, short-circuiting, ghosts and unfolding, termination, strict mode, missing engines, TLC positive and negative runs with exports, Lean `sorry` and axioms, custom proofs, the Lean version pin |
 | `tests/test_papers.py` | Multi-clause dispatch, quantifiers, `assume`/`havoc`/`block`, tuple bounds, lexicographic measures (`demo/paper.ex`) |
+| `tests/test_dafny.py` | Maximum, concatenation, environments, recursive interpretation and rewriting, stack execution, expression compiler correctness, and parsing. Real Z3/Boogie proofs, runtime oracles, and rejected mutations; ghost quantifier safety and recursion guards |
 | `tests/test_conformance.py` | 45 integer cases, including signed and very large values, evaluated on OTP (`front/oracle.exs`) and then proved through Z3, Boogie and Lean |
 | `tests/case.py` | Shared harness: a temporary directory, `vex … --out … --json`, and exit-code assertions |
 

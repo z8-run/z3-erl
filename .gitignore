@@ -2,6 +2,7 @@
 /.tools/
 /.vex/
 /.lake/
+/tmp/
 **/_build/
 **/deps/
 **/.vex/

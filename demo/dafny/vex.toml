@@ -1,0 +1,5 @@
+sources = ["*.ex"]
+engine = "z3"
+jobs = 4
+timeout_ms = 10000
+strict = true

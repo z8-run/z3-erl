@@ -16,7 +16,7 @@ states the exact meaning; [trust](trust.md) states what a result claims.
 | termination | nonnegative integer measures, structural `term_size`, lexicographic tuples, one measure per recursive clause, decrease across the whole recursive component | `flow::rank`, `flow::exec` |
 | matching | variables, repeated variables, literals, tuples of exact length, lists with tails, nested `=` patterns, rebinding, ordered `case` with coverage, isolated branch scope | `flow::pattern`, `flow::exec` |
 | function clauses | ordered clauses, argument patterns, one guard per clause, per-clause contracts | `front/lib/read.ex`, `flow::clause` |
-| quantifiers | `forall` and `exists` over profile values in contracts and assertions | `flow::spec` |
+| quantifiers | `forall` and `exists` over profile values in contracts, assertions and ghost values; quantified values reject recursive calls within the current component | `flow::spec`, `flow::proof` |
 | runtime erasure | proof statements and ghost functions do not exist in compiled code | `front/lib/vex.ex` |
 
 Outside the profile: floats, maps, binaries, exceptions, higher-order and dynamic

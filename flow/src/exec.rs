@@ -204,7 +204,7 @@ impl check<'_, '_> {
                 }
                 out
             }
-            kind::quant { .. } => bail!("quantifiers belong in contracts and assertions"),
+            kind::quant { .. } => self.quantified(f, n, s)?,
             _ => self.proof(f, n, s, depth)?,
         };
         if results.len() > 1024 {

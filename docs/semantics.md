@@ -74,6 +74,10 @@ Assertions check definedness and truth before contributing a fact; an optional
 literal message is retained in the plan and failure diagnostic. `forall` and
 `exists` bind profile terms lexically. Their predicates must be boolean and
 well-defined for every bound value, including for existential specifications.
+Quantified expressions can also compute values in ghost functions and ghost
+blocks. Their definedness is checked before use; executable bodies reject them.
+Calls in such values must be total and outside the enclosing recursive component;
+recursive quantified definitions currently lack a checked decrease rule and are rejected.
 Logical substitution renames binders when needed to avoid variable capture.
 
 `havoc` introduces fresh ghost values. `block` verifies a local proof and restores
