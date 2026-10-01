@@ -23,6 +23,8 @@ bin/vex check --config demo/dafny/vex.toml
 The Makefile selects dependencies for each sample. `engine`, `jobs`, `timeout`
 (milliseconds per obligation), and `out` can be overridden. `make report`
 summarizes the last run; use the same `out` override to inspect a separate run.
+Make defaults to 10 seconds for SMT and 30 seconds when Lean is selected, allowing
+for cold startup. An explicit `timeout` always takes precedence.
 The regression suite uses both direct Z3 and Boogie, checks real Elixir behavior,
 and requires incorrect mutations to remain unproved. These complex examples do
 not claim to pass the default Lean automation; the verifier still supports

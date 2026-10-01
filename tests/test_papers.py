@@ -47,10 +47,12 @@ class papers(case):
         defv client(), do: admitted()
         """)
         report = self.invoke("check", path, "--engine", "all", code=1)
-        self.assertTrue(all(c["status"] == "conditional" for c in report["contracts"]))
+        self.assertTrue(all(c["status"] == "conditional" for c in report["contracts"]),
+                        report["evidence"])
         admitted = next(c for c in report["contracts"] if c["owner"].endswith("admitted/0"))
         self.assertEqual(len(admitted["assumptions"]), 1)
-        self.assertTrue(all(e["status"] == "proved" for e in report["evidence"]))
+        self.assertTrue(all(e["status"] == "proved" for e in report["evidence"]),
+                        report["evidence"])
 
     def test_local_proof_facts_and_havoc_do_not_leak(self):
         path = self.source("""

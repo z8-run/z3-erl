@@ -15,6 +15,11 @@ class case(unittest.TestCase):
         self.dir = Path(self.tmp.name)
 
     def invoke(self, *args, code=0):
+        # Cold Lean startup can exceed the SMT budget after large proof runs.
+        if "--timeout" not in args and any(
+            a == "--engine" and b in ("lean", "all") for a, b in zip(args, args[1:])
+        ):
+            args += ("--timeout", "30000")
         result = subprocess.run(
             [str(binary), *map(str, args), "--out", str(self.dir / "out"), "--json"],
             cwd=root, capture_output=True, text=True, timeout=300,
@@ -26,4 +31,3 @@ class case(unittest.TestCase):
         path = self.dir / name
         path.write_text("defmodule Fixture do\n use :vex\n" + body + "\nend\n")
         return path
-
